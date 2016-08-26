@@ -31,20 +31,6 @@ class ChannelModeLargeBan : public ChannelMode
 
 class CharybdisProto : public IRCDProto
 {
-	BotInfo *FindIntroduced()
-	{
-		BotInfo *bi = Config->GetClient("OperServ");
-		
-		if (bi && bi->introduced)
-			return bi;
-		
-		for (botinfo_map::iterator it = BotListByNick->begin(), it_end = BotListByNick->end(); it != it_end; ++it)
-			if (it->second->introduced)
-				return it->second;
-			
-		return NULL;
-	}
-
  public:
 	
 	CharybdisProto(Module *creator) : IRCDProto(creator, "Charybdis 3.4+")
@@ -70,14 +56,30 @@ class CharybdisProto : public IRCDProto
 	void SendSGLineDel(const XLine *x) anope_override { ratbox->SendSGLineDel(x); }
 	void SendAkill(User *u, XLine *x) anope_override { ratbox->SendAkill(u, x); }
 	void SendAkillDel(const XLine *x) anope_override { ratbox->SendAkillDel(x); }
+	void SendSQLine(User *, const XLine *x) anope_override { ratbox->SendSQLine(NULL, x); }
+	void SendSQLineDel(const XLine *x) anope_override { ratbox->SendSQLineDel(x); }
 	void SendJoin(User *user, Channel *c, const ChannelStatus *status) anope_override { ratbox->SendJoin(user, c, status); }
 	void SendServer(const Server *server) anope_override { ratbox->SendServer(server); }
 	void SendChannel(Channel *c) anope_override { ratbox->SendChannel(c); }
-	void SendTopic(const MessageSource &source, Channel *c) anope_override { ratbox->SendTopic(source, c); }
 	bool IsIdentValid(const Anope::string &ident) anope_override { return ratbox->IsIdentValid(ident); }
 	void SendLogin(User *u, NickAlias *na) anope_override { ratbox->SendLogin(u, na); }
 	void SendLogout(User *u) anope_override { ratbox->SendLogout(u); }
 
+	void SendTopic(const MessageSource &source, Channel *c) anope_override
+	{
+		if (Servers::Capab.count("EOPMOD"))
+		{
+			time_t ts = c->topic_ts;
+			if (c->topic_time > ts)
+				ts = Anope::CurTime;
+			UplinkSocket::Message(source) << "ETB 0 " << c->name << " " << ts << " " << c->topic_setter << " :" << c->topic;
+		}
+		else
+		{
+			ratbox->SendTopic(source, c);
+		}
+	}
+	
 	void SendSASLMechanisms(std::vector<Anope::string> &mechanisms) anope_override
 	{
 		Anope::string mechlist;
@@ -88,22 +90,6 @@ class CharybdisProto : public IRCDProto
 		}
 		
 		UplinkSocket::Message(Me) << "ENCAP * MECHLIST :" << (mechanisms.empty() ? "" : mechlist.substr(1));
-	}
-
-	void SendSQLine(User *, const XLine *x) anope_override
-	{
-		/* Calculate the time left before this would expire, capping it at 2 days */
-		time_t timeleft = x->expires - Anope::CurTime;
-		
-		if (timeleft > 172800 || !x->expires)
-			timeleft = 172800;
-		
-		UplinkSocket::Message(FindIntroduced()) << "ENCAP * RESV " << timeleft << " " << x->mask << " 0 :" << x->GetReason();
-	}
-	
-	void SendSQLineDel(const XLine *x) anope_override
-	{
-		UplinkSocket::Message(Config->GetClient("OperServ")) << "ENCAP * UNRESV " << x->mask;
 	}
 
 	void SendConnect() anope_override
@@ -117,7 +103,7 @@ class CharybdisProto : public IRCDProto
 		 * CHW      - Can do channel wall @#
 		 * CLUSTER  - Supports umode +l, can send LOCOPS (encap only)
 		 * ENCAP    - Can do ENCAP message
-		 * EOPMOD   - Can do channel wall =# (for cmode +z)
+		 * EOPMOD   - Can do channel wall =# (for cmode +z), also ETB
 		 * EUID     - Can do EUID (its similar to UID but includes the ENCAP REALHOST and ENCAP LOGIN information)
 		 * EX       - Can do channel +e exemptions
 		 * GLN      - Can set G:Lines
@@ -127,12 +113,12 @@ class CharybdisProto : public IRCDProto
 		 * MLOCK    - Supports MLOCK
 		 * RSFNC    - Forces a nickname change and propagates it (encap only)
 		 * SERVICES - Support channel mode +r (only registered users may join)
-		 * SAVE     - Resolve a nick collision by changing a nickname to the UID.
+		 * SAVE     - Resolve a nick collision by changing a nickname to the UID; Sent as NICK if not negotiated
 		 * TB       - Supports topic burst
 		 * UNKLN    - Can do UNKLINE (encap only)
 		 * QS       - Can handle quit storm removal
 		*/
-		UplinkSocket::Message() << "CAPAB :BAN CHW CLUSTER ENCAP EOPMOD EUID EX IE KLN KNOCK MLOCK QS RSFNC SERVICES TB UNKLN";
+		UplinkSocket::Message() << "CAPAB :CHW CLUSTER ENCAP EOPMOD EUID EX IE KLN KNOCK MLOCK QS RSFNC SERVICES TB UNKLN";
 
 		/* Make myself known to myself in the serverlist */
 		SendServer(Me);
@@ -157,6 +143,22 @@ class CharybdisProto : public IRCDProto
 	{
 		UplinkSocket::Message(Me) << "ENCAP " << u->server->GetName() << " RSFNC " << u->GetUID()
 						<< " " << newnick << " " << when << " " << u->timestamp;
+	}
+
+	void SendSZLine(User *, const XLine *x) anope_override
+	{
+		/* Calculate the time left before this would expire, capping it at 2 days */
+		time_t timeleft = x->expires - Anope::CurTime;
+
+		if (timeleft > 172800 || !x->expires)
+			timeleft = 172800;
+
+		UplinkSocket::Message(Config->GetClient("OperServ")) << "ENCAP * DLINE " << timeleft << " " << x->GetHost() << " :" << x->GetReason();
+	}
+	
+	void SendSZLineDel(User *, const XLine *x) anope_override
+	{
+		UplinkSocket::Message(Config->GetClient("OperServ")) << "ENCAP * UNDLINE " << x->GetHost();
 	}
 
 	void SendSVSHold(const Anope::string &nick, time_t delay) anope_override
@@ -191,7 +193,6 @@ class CharybdisProto : public IRCDProto
 		UplinkSocket::Message(Me) << "ENCAP " << (s ? s->GetName() : uid.substr(0, 3)) << " SVSLOGIN " << uid << " * " << (!vident.empty() ? vident : '*') << " " << (!vhost.empty() ? vhost : '*') << " " << acc;
 	}
 };
-
 
 struct IRCDMessageEncap : IRCDMessage
 {
