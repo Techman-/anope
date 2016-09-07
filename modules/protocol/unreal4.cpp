@@ -82,6 +82,7 @@ class UnrealIRCdProto : public IRCDProto
 		u->RemoveMode(HostServ, "VHOST");
 		ModeManager::ProcessModes();
 		u->SetMode(HostServ, "CLOAK");
+		IRCD->SendNumeric(396, u->GetUID(), "%s :is now your displayed host", u->GetDisplayedHost().c_str());
 	}
 
 	void SendAkill(User *u, XLine *x) anope_override
@@ -203,7 +204,10 @@ class UnrealIRCdProto : public IRCDProto
 		if (!vIdent.empty())
 			UplinkSocket::Message(Me) << "CHGIDENT " << u->GetUID() << " " << vIdent;
 		if (!vhost.empty())
+		{
 			UplinkSocket::Message(Me) << "CHGHOST " << u->GetUID() << " " << vhost;
+			IRCD->SendNumeric(396, u->GetUID(), "%s :is now your displayed host", vhost.c_str());
+		}
 	}
 
 	void SendConnect() anope_override
